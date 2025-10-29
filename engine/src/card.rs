@@ -142,8 +142,12 @@ impl Card {
         // Melee units have range <= 2.0, ranged units have range > 2.0
         let is_ranged = range > 2.0;
 
+        // Determine if this unit can cross rivers (air units, jumping units)
+        // Check transport type: "air" = can cross, "ground" = cannot cross
+        let can_cross_river = self.transport.as_ref().map(|t| t == "air").unwrap_or(false);
+
         for _ in 0..count {
-            let entity = Entity::new(
+            let entity = Entity::new_with_card_info(
                 owner,
                 position,
                 EntityKind::Troop(TroopData {
@@ -154,7 +158,10 @@ impl Card {
                     movement_speed: self.movement_speed_value.unwrap_or(60.0),
                     target_type: self.get_target_type(),
                     is_ranged,
+                    can_cross_river,
                 }),
+                self.name.clone(),
+                level_stats.level,
             );
             state.add_entity(entity);
         }

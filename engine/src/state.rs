@@ -1,6 +1,7 @@
 //! Game state management and serialization.
 
 use crate::action::Action;
+use crate::arena::Arena;
 use crate::card::Card;
 use crate::entities::Entity;
 use crate::rng::Rng;
@@ -31,6 +32,9 @@ pub struct GameState {
     /// Available cards (loaded at game start, indexed by card name).
     cards: HashMap<String, Card>,
 
+    /// Arena geometry and tile system.
+    pub arena: Arena,
+
     /// Next entity ID to assign.
     next_entity_id: u32,
 
@@ -54,16 +58,108 @@ impl GameState {
             cards.insert(card.name.clone(), card);
         }
 
-        Self {
+        let mut state = Self {
             tick: 0,
             rng: Rng::new(seed),
             entities: HashMap::new(),
             players,
             cards,
+            arena: Arena::new(),
             next_entity_id: 1,
             match_time: 0.0,
             max_match_time: 180.0, // 3 minutes (will be configurable)
-        }
+        };
+
+        // Spawn towers for both players
+        state.spawn_towers();
+
+        state
+    }
+
+    /// Spawns tower entities for both players at their starting positions.
+    fn spawn_towers(&mut self) {
+        use crate::entities::{EntityKind, TowerData};
+        use shared::Position;
+
+        // Player 1 towers (bottom side)
+        // King tower: center of 4x4 zone (x=7-10, y=27-30) = (8.5, 28.5)
+        let p1_king = Entity::new(
+            PlayerId::Player1,
+            Position::new(8.5, 28.5),
+            EntityKind::Tower(TowerData {
+                base_hp: 2400.0,
+                damage: 50.0,
+                range: 7.0,
+                attack_speed: 1.0,
+            }),
+        );
+        self.add_entity(p1_king);
+
+        // Left Princess tower: center of 3x3 zone (x=2-4, y=24-26) = (3.0, 25.0)
+        let p1_left = Entity::new(
+            PlayerId::Player1,
+            Position::new(3.0, 25.0),
+            EntityKind::Tower(TowerData {
+                base_hp: 1400.0,
+                damage: 50.0,
+                range: 7.0,
+                attack_speed: 0.8,
+            }),
+        );
+        self.add_entity(p1_left);
+
+        // Right Princess tower: center of 3x3 zone (x=13-15, y=24-26) = (14.0, 25.0)
+        let p1_right = Entity::new(
+            PlayerId::Player1,
+            Position::new(14.0, 25.0),
+            EntityKind::Tower(TowerData {
+                base_hp: 1400.0,
+                damage: 50.0,
+                range: 7.0,
+                attack_speed: 0.8,
+            }),
+        );
+        self.add_entity(p1_right);
+
+        // Player 2 towers (top side)
+        // King tower: center of 4x4 zone (x=7-10, y=1-4) = (8.5, 2.5)
+        let p2_king = Entity::new(
+            PlayerId::Player2,
+            Position::new(8.5, 2.5),
+            EntityKind::Tower(TowerData {
+                base_hp: 2400.0,
+                damage: 50.0,
+                range: 7.0,
+                attack_speed: 1.0,
+            }),
+        );
+        self.add_entity(p2_king);
+
+        // Left Princess tower: center of 3x3 zone (x=2-4, y=5-7) = (3.0, 6.0)
+        let p2_left = Entity::new(
+            PlayerId::Player2,
+            Position::new(3.0, 6.0),
+            EntityKind::Tower(TowerData {
+                base_hp: 1400.0,
+                damage: 50.0,
+                range: 7.0,
+                attack_speed: 0.8,
+            }),
+        );
+        self.add_entity(p2_left);
+
+        // Right Princess tower: center of 3x3 zone (x=13-15, y=5-7) = (14.0, 6.0)
+        let p2_right = Entity::new(
+            PlayerId::Player2,
+            Position::new(14.0, 6.0),
+            EntityKind::Tower(TowerData {
+                base_hp: 1400.0,
+                damage: 50.0,
+                range: 7.0,
+                attack_speed: 0.8,
+            }),
+        );
+        self.add_entity(p2_right);
     }
 
     /// Loads cards from a JSON file.

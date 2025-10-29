@@ -5,7 +5,7 @@ use shared::Position;
 
 /// The game arena containing tile layout and dimensions.
 ///
-/// Based on the legacy 32x18 tile system.
+/// Based on the legacy 18x32 tile system.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Arena {
     pub width: u32,
@@ -15,14 +15,27 @@ pub struct Arena {
 }
 
 impl Arena {
-    /// Creates a default arena (32x18 tiles).
+    /// Creates a default arena (18x32 tiles).
     pub fn new() -> Self {
-        let width = 32;
-        let height = 18;
+        let width = 18;
+        let height = 32;
         let tile_size = 1.0;
 
-        // Initialize with grass tiles (will be configurable later)
-        let tiles = vec![vec![TileType::Grass; width as usize]; height as usize];
+        // Initialize arena with grass, river, and bridges
+        let mut tiles = vec![vec![TileType::Grass; width as usize]; height as usize];
+
+        // Add river at center (x = 15-16 in legacy 32-wide arena maps to y = 15-16 in our 18-high arena)
+        // Our arena is 18 wide x 32 high, so river runs horizontally at y = 15-16
+        for x in 0..width as usize {
+            tiles[15][x] = TileType::River;
+            tiles[16][x] = TileType::River;
+        }
+
+        // Add bridges at x = 3 and x = 14 (1 unit wide each)
+        for y in 15..=16 {
+            tiles[y][3] = TileType::Bridge;
+            tiles[y][14] = TileType::Bridge;
+        }
 
         Self {
             width,

@@ -18,6 +18,12 @@ pub struct Entity {
 
     /// Current target entity ID (if any).
     pub target: Option<u32>,
+
+    /// Card name that spawned this entity (for display purposes).
+    pub card_name: Option<String>,
+
+    /// Level of the card that spawned this entity.
+    pub level: Option<u32>,
 }
 
 impl Entity {
@@ -32,6 +38,24 @@ impl Entity {
             kind,
             attack_cooldown: 0.0,
             target: None,
+            card_name: None,
+            level: None,
+        }
+    }
+
+    pub fn new_with_card_info(owner: PlayerId, position: Position, kind: EntityKind, card_name: String, level: u32) -> Self {
+        let max_hp = kind.base_hp();
+        Self {
+            owner,
+            position,
+            velocity: Velocity::zero(),
+            hp: max_hp,
+            max_hp,
+            kind,
+            attack_cooldown: 0.0,
+            target: None,
+            card_name: Some(card_name),
+            level: Some(level),
         }
     }
 
@@ -126,6 +150,14 @@ impl Entity {
             _ => false,
         }
     }
+
+    /// Returns true if this entity can cross river tiles (air units, jumping units).
+    pub fn can_cross_river(&self) -> bool {
+        match &self.kind {
+            EntityKind::Troop(data) => data.can_cross_river,
+            _ => true, // Projectiles, spells, and towers don't interact with rivers
+        }
+    }
 }
 
 /// Collision shape for entities.
@@ -180,6 +212,7 @@ pub struct TroopData {
     pub movement_speed: f32,
     pub target_type: TargetType,
     pub is_ranged: bool, // true = spawns projectiles, false = instant melee damage
+    pub can_cross_river: bool, // true = can cross river (air units, Hog Rider, etc.)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

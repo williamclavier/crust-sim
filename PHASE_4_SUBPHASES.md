@@ -282,7 +282,9 @@ Upon review, this functionality was already correctly implemented in Phase 4.1's
 
 ---
 
-## Phase 4.7: Arena Navigation
+## ✅ Phase 4.7: Arena Navigation (COMPLETE)
+
+**Status:** Complete
 
 **Goal:** Implement river/bridge mechanics and tile-based movement constraints
 
@@ -331,14 +333,36 @@ Currently units can walk through rivers and ignore terrain. The legacy engine ha
 - Movement is still deterministic
 - Ready for Phase 5 (Replay & Serialization)
 
-**Known Limitations (Deferred):**
-- No pathfinding algorithm (A*) - units may get stuck against river
-- Units don't intelligently choose shortest path to bridge
-- Just blocks illegal moves, doesn't guide movement
-- Advanced pathfinding deferred to future phase (outside Phase 4 scope)
+**Implemented:**
+- Added `can_cross_river` flag to TroopData (air units, jumping units)
+- Arena initialized with river at y=15-16, bridges at x=4-6 and x=11-13
+- Tile passability checking in movement system (blocks river for ground units)
+- **Bridge waypoint pathfinding** (matching legacy engine approach):
+  - Detects when target is across river
+  - Calculates nearest bridge (left bridge at x=5, right bridge at x=12)
+  - Sets intermediate waypoint at bridge center
+  - Units path to bridge first, then to target
+- Air units and jumping units ignore river blocking
 
-**Notes:**
-This is a **constraint system**, not full pathfinding. Units will attempt to move toward target, and movement will be blocked if they hit a river tile. This matches the legacy engine's simple approach and is sufficient for Phase 4.
+**Testing Results:**
+- Ground units correctly blocked from walking through river
+- Bridge pathfinding automatically routes units to nearest bridge
+- Air units can cross river directly
+- No regression in existing combat/projectile tests
+
+**Implementation Notes:**
+- Uses **simple waypoint pathfinding** (not A* or flow fields)
+- Matches legacy engine's approach: `if (target across river) { route_to_bridge() }`
+- Bridge selection based on horizontal distance (closest bridge)
+- Once unit crosses river, moves directly toward target
+- Deterministic and performant (no expensive pathfinding calculations)
+- **River crossing logic**: Units can ENTER river zone only at bridge X coordinates, but once inside the river zone (from crossing a bridge), they can exit freely to prevent diagonal movement blocking
+
+**Known Limitations (Acceptable for Phase 4):**
+- No dynamic obstacle avoidance around buildings/troops (handled by collision system)
+- No lane-based steering or formation behavior
+- Units pick closest bridge by X-distance, not path distance
+- Advanced pathfinding features (A*, flow fields, lane graphs) deferred to future phase
 
 ---
 
