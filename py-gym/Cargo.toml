@@ -1,0 +1,35 @@
+[package]
+name = "crust-gym"
+version = "0.1.0"
+edition = "2021"
+authors = ["Crust Sim Contributors"]
+description = "Python bindings for Clash Royale RL environment"
+license = "MIT"
+
+[lib]
+name = "crust_gym"
+crate-type = ["cdylib"]  # Required for Python extension module
+
+[dependencies]
+# PyO3 for Python bindings
+pyo3 = { version = "0.22", features = ["extension-module", "abi3-py38"] }
+numpy = "0.22"  # NumPy array support
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Internal dependencies
+engine = { path = "../engine" }
+shared = { path = "../shared" }
+
+# Utilities
+thiserror = { workspace = true }
+
+[build-dependencies]
+maturin = "1.7"
+
+[features]
+default = []
+# Enable debug symbols for profiling
+debug = []

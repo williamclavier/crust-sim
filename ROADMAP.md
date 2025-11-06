@@ -182,33 +182,118 @@ Success Criteria
 
 Browser viewer renders and updates at 60 FPS
 
-Phase 7: AI & WebSocket Bridge
+Phase 7: AI & Python RL Integration
 
-Goal: Expose engine to external programs for automation or RL training.
+Goal: Expose engine to Python ML ecosystem via PyO3 bindings and Gymnasium API for reinforcement learning research.
+
+Architecture
+
+Create py-gym crate with Maturin + PyO3 bindings
+
+Implement Gymnasium-compatible environment
+
+Design observation/action spaces for RL
+
+Add configurable reward shaping
+
+Support self-play training with checkpoint opponents
 
 Tasks
 
-Create bridge crate using tokio-tungstenite
+Milestone 1: Core PyO3 Bindings
+- Set up py-gym crate with Maturin build system
+- Implement ClashEnv struct exposed to Python
+- Add reset() and step() methods with proper serialization
+- Unit tests for Rust-Python data conversion
 
-Implement commands:
+Milestone 2: Gymnasium Wrapper
+- Create ClashRoyaleEnv(gym.Env) Python class
+- Define observation space: Dict space with arena grid (32x18x6), player state, hand
+- Define action space: Tuple(Discrete(4), Box(0-31), Box(0-17)) for hybrid card+position
+- Implement action validation and masking
+- Register with Gymnasium: gym.make("ClashRoyale-v0")
 
-get_state → returns serialized JSON
+Milestone 3: Reward Shaping
+- Implement configurable reward function:
+  - Tower damage: ±0.01 per HP
+  - Tower kill bonus: ±5.0
+  - Victory: ±100.0
+  - Elixir efficiency: small shaping term
+- Add reward schemes: sparse, shaped, curriculum
+- Test reward signal with random policy
 
-step → advance simulation
+Milestone 4: Training Infrastructure
+- Create examples/train_ppo.py using Stable-Baselines3
+- Add TensorBoard logging for metrics
+- Implement checkpoint saving/loading
+- Create evaluation script with ELO rating system
+- Verify deterministic training (same seed = same results)
 
-action → play card
+Milestone 5: Self-Play System
+- Implement opponent pool management
+- Add periodic checkpoint saving during training
+- Create self-play training loop (train vs. past versions)
+- Benchmark: agent reaches >70% win rate vs. scripted bot
 
-Build minimal Python SDK client for testing
+Milestone 6: Optimization
+- Add vectorized environments (16+ parallel rollouts)
+- Profile and optimize observation encoding
+- Reduce FFI overhead to <5%
+- Target: 1,000+ steps/sec (single env), 10,000+ (16 parallel)
 
 Deliverables
 
-WebSocket bridge running on localhost
+pip install crust-gym works from maturin build
 
-Python test script connects and plays a match
+python examples/train_ppo.py trains a functional agent
+
+Agent improves via self-play to superhuman performance
+
+Comprehensive documentation in docs/PYTHON_RL_INTEGRATION.md
 
 Success Criteria
 
-External agent can control simulation and receive state
+Environment passes Gymnasium API compliance tests (check_env)
+
+Same seed produces deterministic trajectories
+
+Trained PPO agent beats random policy within 50k timesteps
+
+Self-play training converges to strategic behavior
+
+Technical Specifications
+
+Observation Space: Structured Dict with multi-channel arena grid, player state vectors, card hand
+
+Action Space: Hybrid (Discrete card selection + Continuous x,y positioning)
+
+Training Scheme: Self-play with periodic checkpoint opponents (proven in AlphaGo/OpenAI Five)
+
+Algorithm: Start with PPO (robust, proven), migrate to SAC (sample-efficient) or MuZero (model-based)
+
+Reward Function: Shaped dense rewards (tower damage + elixir efficiency) with configurable schemes
+
+Performance: 1000+ steps/sec single env, 10000+ vectorized, <100 MB memory per env
+
+Dependencies
+
+Python: gymnasium>=0.29, stable-baselines3>=2.0, numpy, tensorboard
+
+Rust: pyo3 = "0.22", numpy = "0.22", maturin = "1.7"
+
+Build: Maturin for creating Python wheels from Rust+PyO3 code
+
+Future Extensions
+
+Multi-agent RL (separate policies, 2v2 modes)
+
+Imitation learning from human replays
+
+Distributed training (Ray RLlib, multi-GPU)
+
+Curriculum learning (start simple, increase complexity)
+
+Explainability tools (attention maps, strategy extraction)
 
 Phase 8: Optimization & Extensibility
 

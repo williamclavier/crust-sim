@@ -44,6 +44,10 @@ crust-sim/
 │   ├── arena.rs      # Field geometry and tile system
 │   ├── state.rs      # GameState serialization
 │   └── action.rs     # Player actions (PlayCard, Spawn)
+├── py-gym/           # Python RL bindings (PyO3 + Gymnasium)
+│   ├── src/          # Rust PyO3 bindings
+│   ├── python/       # Python wrapper package
+│   └── examples/     # Training scripts
 ├── viewer/           # WASM/Bevy browser visualizer
 ├── bridge/           # WebSocket/gRPC control layer
 ├── shared/           # Shared data structures
@@ -138,10 +142,36 @@ Follow the 8-phase roadmap in `ROADMAP.md`:
 **Phase 3-4**: Gameplay (cards, elixir, combat)
 **Phase 5**: Replay system
 **Phase 6**: Browser UI
-**Phase 7**: External API
+**Phase 7**: Python RL Integration (PyO3 + Gymnasium)
 **Phase 8**: Optimization
 
 Each phase builds incrementally. Validate correctness at every step using deterministic replays.
+
+## Python RL Integration
+
+The project includes Python bindings for reinforcement learning research:
+
+**Key Features:**
+- **Gymnasium API**: Standard interface compatible with Stable-Baselines3, Ray RLlib, etc.
+- **PyO3 Bindings**: Direct Rust-Python FFI (1000+ steps/sec, no network overhead)
+- **Hybrid Action Space**: Discrete card selection + continuous (x,y) positioning
+- **Self-Play Ready**: Built-in support for training against past checkpoints
+- **Configurable Rewards**: Sparse, shaped, and curriculum learning schemes
+
+**Quick Start:**
+```python
+import gymnasium as gym
+import crust_gym
+
+env = gym.make("ClashRoyale-v0", seed=42)
+obs, info = env.reset()
+
+from stable_baselines3 import PPO
+model = PPO("MultiInputPolicy", env)
+model.learn(total_timesteps=1_000_000)
+```
+
+See `docs/PYTHON_RL_INTEGRATION.md` for detailed architecture documentation.
 
 ## Testing Strategy
 
