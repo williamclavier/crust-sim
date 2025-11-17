@@ -71,6 +71,9 @@ fn main() {
                 writeln!(stdout, "{}", json).unwrap();
                 stdout.flush().unwrap();
             }
+            "STEP_NOOP" => {
+                step_with_action(game, pov, -1, -1);
+            }
             "EXIT" => {
                 break;
             }
