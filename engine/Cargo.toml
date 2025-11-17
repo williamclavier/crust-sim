@@ -6,12 +6,14 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+
 serde.workspace = true
 serde_json.workspace = true
 oorandom.workspace = true
 thiserror.workspace = true
 
 shared = { path = "../shared" }
+
 
 [lib]
 crate-type = ["cdylib", "rlib"]

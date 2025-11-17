@@ -1,12 +1,11 @@
 //! Game state management and serialization.
-
 use crate::action::Action;
 use crate::card::Card;
 use crate::entities::Entity;
 use crate::rng::Rng;
 use serde::{Deserialize, Serialize};
-use shared::{PlayerId, Result};
 use std::collections::HashMap;
+use shared::{PlayerId, Result, CRState, Tower as CRTower, Unit as CRUnit, LegalMasks};
 
 /// The complete state of a game simulation.
 ///
@@ -39,6 +38,21 @@ pub struct GameState {
 
     /// Maximum match duration (in seconds).
     pub max_match_time: f32,
+}
+
+fn extract_entity_info(e: &Entity) -> Option<(PlayerId, (f32, f32), (f32, f32))> {
+    // Extract owner, position (x, y), and velocity (vx, vy) from Entity
+    // Only include movable troop entities (not towers or projectiles)
+    match &e.kind {
+        crate::entities::EntityKind::Troop(_) => {
+            Some((
+                e.owner,
+                (e.position.x, e.position.y),
+                (e.velocity.x, e.velocity.y),
+            ))
+        }
+        _ => None, // Skip towers, projectiles, and spells
+    }
 }
 
 impl GameState {
@@ -260,4 +274,241 @@ pub enum TowerType {
     King,
     LeftPrincess,
     RightPrincess,
+}
+
+impl GameState {
+    /// Export a snapshot of the game for RL / external control.
+    /// `pov` = which player is considered "ALLY" (usually Player1).
+    pub fn export_cr_state(&self, pov: PlayerId) -> CRState {
+        // Decide who is ally vs enemy from the POV
+        let (ally_id, enemy_id) = match pov {
+            PlayerId::Player1 => (PlayerId::Player1, PlayerId::Player2),
+            PlayerId::Player2 => (PlayerId::Player2, PlayerId::Player1),
+        };
+
+        let ally_player = self.players.get(&ally_id).expect("ally player missing");
+        let enemy_player = self.players.get(&enemy_id).expect("enemy player missing");
+
+        // === Tower snapshots ===
+
+        const KING_MAX_HP: f32 = 2400.0;
+        const PRINCESS_MAX_HP: f32 = 1400.0;
+
+        // TEMP: positions are rough placeholders; tweak later.
+        fn tower_pos_for(player: PlayerId, tt: TowerType) -> (f32, f32) {
+            match (player, tt) {
+                // Player1 bottom, Player2 top (arbitrary grid coords)
+                (PlayerId::Player1, TowerType::King)          => (16.0,  2.0),
+                (PlayerId::Player1, TowerType::LeftPrincess)  => (8.0,   4.0),
+                (PlayerId::Player1, TowerType::RightPrincess) => (24.0,  4.0),
+                (PlayerId::Player2, TowerType::King)          => (16.0, 30.0),
+                (PlayerId::Player2, TowerType::LeftPrincess)  => (8.0,  28.0),
+                (PlayerId::Player2, TowerType::RightPrincess) => (24.0, 28.0),
+            }
+        }
+
+        let mut ally_towers = Vec::new();
+        let mut enemy_towers = Vec::new();
+
+        for (&tt, &hp) in &ally_player.tower_hp {
+            let max_hp = match tt {
+                TowerType::King => KING_MAX_HP,
+                TowerType::LeftPrincess | TowerType::RightPrincess => PRINCESS_MAX_HP,
+            };
+            let (x, y) = tower_pos_for(ally_id, tt);
+            ally_towers.push(CRTower {
+                owner: "ALLY".to_string(),
+                x,
+                y,
+                hp_frac: (hp / max_hp).clamp(0.0, 1.0),
+            });
+        }
+
+        for (&tt, &hp) in &enemy_player.tower_hp {
+            let max_hp = match tt {
+                TowerType::King => KING_MAX_HP,
+                TowerType::LeftPrincess | TowerType::RightPrincess => PRINCESS_MAX_HP,
+            };
+            let (x, y) = tower_pos_for(enemy_id, tt);
+            enemy_towers.push(CRTower {
+                owner: "ENEMY".to_string(),
+                x,
+                y,
+                hp_frac: (hp / max_hp).clamp(0.0, 1.0),
+            });
+        }
+
+        // === Units (currently empty; we’ll fill later) ===
+
+        let mut ally_units: Vec<CRUnit> = Vec::new();
+        let mut enemy_units: Vec<CRUnit> = Vec::new();
+
+        for entity in self.entities.values() {
+            if let Some((owner_id, (x, y), (vx, vy))) = extract_entity_info(entity) {
+                let owner_str = if owner_id == ally_id { "ALLY" } else { "ENEMY" }.to_string();
+                let unit = CRUnit {
+                    owner: owner_str,
+                    x,
+                    y,
+                    vx,
+                    vy,
+                };
+                if owner_id == ally_id {
+                    ally_units.push(unit);
+                } else {
+                    enemy_units.push(unit);
+                }
+            }
+        }
+
+        // === Legal masks (placeholder; everything allowed for now) ===
+
+        let legal = LegalMasks {
+            cards: vec![true; 8],        // 8 hand slots
+            tiles_flat: vec![true; 16 * 9], // 16x9 placement grid
+        };
+
+        // === Damage-based helpers ===
+
+        let ally_total_hp: f32  = ally_player.tower_hp.values().sum();
+        let enemy_total_hp: f32 = enemy_player.tower_hp.values().sum();
+        let ally_max_total  = KING_MAX_HP + 2.0 * PRINCESS_MAX_HP;
+        let enemy_max_total = ally_max_total;
+
+        let ally_tower_hp_drop  = (ally_max_total  - ally_total_hp).max(0.0);
+        let enemy_tower_hp_drop = (enemy_max_total - enemy_total_hp).max(0.0);
+
+        // === Win / lose flags ===
+
+        let win  = enemy_player.is_defeated()
+            || (self.is_match_over() && ally_total_hp > enemy_total_hp);
+        let lose = ally_player.is_defeated()
+            || (self.is_match_over() && enemy_total_hp > ally_total_hp);
+
+        CRState {
+            t_ms: (self.match_time * 1000.0) as u64,
+            ally_elixir: ally_player.elixir,
+            time_left: (self.max_match_time - self.match_time).max(0.0),
+            overtime: self.match_time > self.max_match_time,
+
+            ally_towers,
+            enemy_towers,
+            ally_units,
+            enemy_units,
+
+            legal,
+
+            win,
+            lose,
+
+            enemy_tower_hp_drop,
+            ally_tower_hp_drop,
+        }
+    }
+}
+
+
+pub fn step_with_action(
+    game: &mut GameState,
+    pov: PlayerId,
+    card_idx: usize,
+    tile_idx: usize,
+) {
+    eprintln!(
+        "step_with_action: pov={:?}, card_idx={}, tile_idx={}, match_time={}",
+        pov, card_idx, tile_idx, game.match_time
+    );
+
+    // 1) Choose which player is "us"
+    let player_id = pov;
+
+    // 2) Get mutable reference to that player's state
+    let player_state = match game.players.get_mut(&player_id) {
+        Some(p) => p,
+        None => {
+            eprintln!("step_with_action: player {:?} not found", player_id);
+            return;
+        }
+    };
+
+    // Track elixir and entity count before action
+    let elixir_before = player_state.elixir;
+    let entity_count_before = game.entities.len();
+
+    // 3) Validate card_idx (0–3 for the 4-card hand)
+    if card_idx >= player_state.hand.len() {
+        eprintln!("step_with_action: invalid card_idx {}", card_idx);
+        return;
+    }
+
+    // Which card in the deck does this hand slot point to?
+    let deck_index = player_state.hand[card_idx];
+    let maybe_card_name = player_state.deck.get(deck_index).cloned();
+    let card_name = match maybe_card_name {
+        Some(name) => name,
+        None => {
+            eprintln!(
+                "step_with_action: no card at deck index {} for player {:?}",
+                deck_index, player_id
+            );
+            return;
+        }
+    };
+
+    // 4) Convert tile_idx into an (x, y) placement in a 16x9 grid
+    let grid_w = 16;
+    let grid_h = 9;
+    if tile_idx >= grid_w * grid_h {
+        eprintln!("step_with_action: invalid tile_idx {}", tile_idx);
+        return;
+    }
+    let gx = (tile_idx % grid_w) as f32;
+    let gy = (tile_idx / grid_w) as f32;
+
+    // TODO: if you want world coords, convert (gx, gy) via your Arena
+    let x = gx;
+    let y = gy;
+
+    // 5) Build an Action that your engine understands
+    // Action::PlayCard expects: player, card_name, level, position
+    // Use level 11 as default (matches test cards)
+    let position = shared::Position::new(x, y);
+    let action = Action::PlayCard {
+        player: player_id,
+        card_name: card_name.clone(),
+        level: 11,
+        position,
+    };
+
+    eprintln!(
+        "step_with_action: applying PlayCard(player={:?}, card={}, level=11, position=({}, {}))",
+        player_id, card_name, x, y
+    );
+
+    // 6) Apply the action
+    if let Err(e) = game.apply_action(&action) {
+        eprintln!("step_with_action: apply_action error: {:?}", e);
+        // Still advance time even if action fails
+    } else {
+        // Log elixir and entity changes after successful action
+        let elixir_after = game.players.get(&player_id).map(|p| p.elixir).unwrap_or(0.0);
+        let entity_count_after = game.entities.len();
+        eprintln!(
+            "step_with_action: card '{}' played. elixir: {} -> {}, entities: {} -> {}",
+            card_name, elixir_before, elixir_after, entity_count_before, entity_count_after
+        );
+    }
+
+    // 7) Advance the simulation by Δt
+    let delta_t = 1.0;
+    game.advance_time(delta_t);
+
+    eprintln!(
+        "step_with_action: finished, new match_time={}, ally elixir={}",
+        game.match_time,
+        game.players
+            .get(&player_id)
+            .map(|p| p.elixir)
+            .unwrap_or(-1.0)
+    );
 }

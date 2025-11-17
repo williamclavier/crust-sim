@@ -1,5 +1,7 @@
 //! Shared data structures and utilities used across the engine.
 
+
+
 use serde::{Deserialize, Serialize};
 
 /// Represents a 2D position in the arena.
@@ -100,3 +102,8 @@ pub enum Error {
     #[error("Configuration error: {0}")]
     Configuration(String),
 }
+
+
+pub mod cr_state;
+
+pub use cr_state::{CRState, Tower, Unit, LegalMasks};
