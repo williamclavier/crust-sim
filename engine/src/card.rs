@@ -43,6 +43,17 @@ pub struct Card {
     pub radius: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effects: Option<Vec<String>>, // ["freeze", "knockback", "spawn", etc.]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mass: Option<f32>, // Mass for collision physics (from legacy engine)
+
+    /// Deployment pattern: (x_offset, y_offset) for each unit.
+    /// If None, uses default horizontal line spacing.
+    /// Examples from legacy engine:
+    /// - Archers: [(-0.5, 0), (0.5, 0)] - horizontal line
+    /// - Goblin Barrel: [(0.4, -0.5), (0.4, 0.5), (-0.5, 0)] - triangle
+    /// - Witch Skeletons: [(2, 0), (0, 2), (-2, 0), (0, -2)] - plus sign
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deploy_pattern: Option<Vec<(f32, f32)>>,
 
     // Level-based stats
     pub levels: Vec<CardLevelStats>,
@@ -146,10 +157,26 @@ impl Card {
         // Check transport type: "air" = can cross, "ground" = cannot cross
         let can_cross_river = self.transport.as_ref().map(|t| t == "air").unwrap_or(false);
 
-        for _ in 0..count {
+        // Spawn units using deployment pattern
+        for i in 0..count {
+            // Get spawn offset from deploy_pattern or use default horizontal line
+            let (offset_x, offset_y) = if let Some(pattern) = &self.deploy_pattern {
+                // Use custom deployment pattern from card definition
+                pattern.get(i as usize).copied().unwrap_or((0.0, 0.0))
+            } else if count > 1 {
+                // Default: horizontal line with 1-tile spacing
+                let offset = i as f32 - (count as f32 - 1.0) / 2.0;
+                (offset, 0.0)
+            } else {
+                // Single unit: no offset
+                (0.0, 0.0)
+            };
+
+            let spawn_pos = Position::new(position.x + offset_x, position.y + offset_y);
+
             let entity = Entity::new_with_card_info(
                 owner,
-                position,
+                spawn_pos,
                 EntityKind::Troop(TroopData {
                     base_hp: hp,
                     damage,
@@ -159,11 +186,19 @@ impl Card {
                     target_type: self.get_target_type(),
                     is_ranged,
                     can_cross_river,
+                    mass: self.mass, // Pass card-specific mass from legacy engine
                 }),
                 self.name.clone(),
                 level_stats.level,
             );
-            state.add_entity(entity);
+            let entity_id = state.add_entity(entity);
+
+            // Lock in target based on spawn position to prevent units from switching sides
+            // This mimics the legacy engine behavior where targeting was determined at spawn
+            let initial_target = crate::systems::movement::find_initial_target(state, entity_id);
+            if let Some(entity) = state.entities.get_mut(&entity_id) {
+                entity.target = initial_target;
+            }
         }
         Ok(())
     }
@@ -227,7 +262,7 @@ pub fn get_test_cards() -> Vec<Card> {
             attack_speed: Some(1.2),
             first_hit_speed: None,
             movement_speed: Some("medium".to_string()),
-            movement_speed_value: Some(1.0),
+            movement_speed_value: Some(1.3), // Medium speed: 1.3 tiles/sec (legacy: 0.65 * 60 / 1800)
             deploy_time: Some(1.0),
             range: Some(1.2),
             projectile_speed: None,
@@ -237,6 +272,8 @@ pub fn get_test_cards() -> Vec<Card> {
             duration: None,
             radius: None,
             effects: None,
+            mass: Some(6.0), // Knight mass from legacy engine
+            deploy_pattern: None, // Single unit, no pattern needed
             levels: vec![
                 CardLevelStats {
                     level: 11,
@@ -260,7 +297,7 @@ pub fn get_test_cards() -> Vec<Card> {
             attack_speed: Some(1.2),
             first_hit_speed: None,
             movement_speed: Some("medium".to_string()),
-            movement_speed_value: Some(1.0),
+            movement_speed_value: Some(1.3), // Medium speed: 1.3 tiles/sec (legacy: 0.65 * 60 / 1800)
             deploy_time: Some(1.0),
             range: Some(5.0),
             projectile_speed: None,
@@ -270,6 +307,8 @@ pub fn get_test_cards() -> Vec<Card> {
             duration: None,
             radius: None,
             effects: None,
+            mass: Some(3.0), // Archer mass from legacy engine
+            deploy_pattern: Some(vec![(-0.51, 0.0), (0.51, 0.0)]), // Side-by-side, ensures no boundary overlap
             levels: vec![
                 CardLevelStats {
                     level: 11,
@@ -293,7 +332,7 @@ pub fn get_test_cards() -> Vec<Card> {
             attack_speed: Some(1.5),
             first_hit_speed: None,
             movement_speed: Some("slow".to_string()),
-            movement_speed_value: Some(0.75),
+            movement_speed_value: Some(0.975), // Slow speed: 0.975 tiles/sec (legacy: 0.65 * 45 / 1800)
             deploy_time: Some(1.0),
             range: Some(1.2),
             projectile_speed: None,
@@ -303,6 +342,8 @@ pub fn get_test_cards() -> Vec<Card> {
             duration: None,
             radius: None,
             effects: None,
+            mass: Some(18.0), // Giant mass from legacy engine (very heavy)
+            deploy_pattern: None, // Single unit, no pattern needed
             levels: vec![
                 CardLevelStats {
                     level: 11,
@@ -336,6 +377,8 @@ pub fn get_test_cards() -> Vec<Card> {
             duration: None,
             radius: Some(2.5),
             effects: Some(vec!["damage".to_string()]),
+            mass: None, // Spells don't have mass (no collision)
+            deploy_pattern: None, // Spells don't spawn units
             levels: vec![
                 CardLevelStats {
                     level: 11,
@@ -369,6 +412,8 @@ pub fn get_test_cards() -> Vec<Card> {
             duration: None,
             radius: Some(4.0),
             effects: Some(vec!["damage".to_string()]),
+            mass: None, // Spells don't have mass (no collision)
+            deploy_pattern: None, // Spells don't spawn units
             levels: vec![
                 CardLevelStats {
                     level: 11,

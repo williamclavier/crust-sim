@@ -1,122 +1,439 @@
 //! Movement system for entities.
 
 use crate::state::{EntityId, GameState};
-use shared::{Position, Velocity};
+use shared::Position;
 
-/// Updates entity movement - sets velocity toward targets and applies movement.
+/// Updates entity movement using steering behavior system.
+/// Based on Clash Royale's force-weighted steering with turn smoothing.
+///
+/// Steering forces:
+/// - Intent vector (toward target): weight 1.0
+/// - Separation force (avoid unit overlaps): weight 0.4
+/// - Wall avoid force: weight 0.5
+/// - Tower avoid force: weight 0.7 (scaled high for signature "slide" effect)
+///
+/// Turn smoothing: lerp(previous_direction, total_direction, 0.18)
 pub fn update(state: &mut GameState, dt: f32) {
-    // First pass: Update velocities based on targets
-    let mut velocity_updates: Vec<(EntityId, Velocity)> = Vec::new();
+    // Collect all moving entities and their steering data
+    let entity_ids: Vec<EntityId> = state.entities.keys().copied().collect();
+    let mut movement_updates: Vec<(EntityId, (f32, f32), Position)> = Vec::new();
 
-    for (id, entity) in &state.entities {
+    for id in &entity_ids {
+        let entity = &state.entities[id];
+
         // Only move troops (not towers)
         if !entity.can_move() {
             continue;
         }
 
-        // Check if entity has a target
-        if let Some(target_id) = entity.target {
-            let target_entity_id = EntityId::from_u32(target_id);
+        // Calculate intent vector (direction toward goal)
+        let intent_vector = calculate_intent_vector(state, entity);
 
-            // Get target position (if target still exists)
-            if let Some(target) = state.entities.get(&target_entity_id) {
-                let distance = entity.position.distance_to(&target.position);
-                let attack_range = entity.attack_range();
-
-                // If target is out of range, move toward it (possibly via bridge waypoint)
-                if distance > attack_range {
-                    let move_speed = entity.movement_speed();
-
-                    // Check if we need to path through a bridge
-                    let move_target = if entity.can_cross_river() {
-                        // Air units / jumping units: go direct
-                        target.position
-                    } else {
-                        // Ground units: check if target is across river
-                        get_movement_waypoint(&entity.position, &target.position, &state.arena)
-                    };
-
-                    let (dir_x, dir_y) = entity.position.direction_to(&move_target);
-
-                    velocity_updates.push((
-                        *id,
-                        Velocity::new(dir_x * move_speed, dir_y * move_speed),
-                    ));
-                } else {
-                    // Target in range - stop moving
-                    velocity_updates.push((*id, Velocity::zero()));
-                }
-            } else {
-                // Target doesn't exist anymore - stop
-                velocity_updates.push((*id, Velocity::zero()));
+        // If no intent (no target, nowhere to go), stop
+        let (intent_x, intent_y) = match intent_vector {
+            Some((x, y)) => (x, y),
+            None => {
+                // No movement - update smoothed_direction to zero
+                movement_updates.push((*id, (0.0, 0.0), entity.position));
+                continue;
             }
+        };
+
+        // Calculate steering forces
+        let separation_force = calculate_separation_force(state, entity, &entity_ids);
+        let tower_avoid_force = calculate_tower_avoidance_force(state, entity);
+        let wall_avoid_force = calculate_wall_avoidance_force(state, entity);
+
+        // Combine forces with weights
+        let total_x = intent_x * 1.0
+            + separation_force.0 * 0.4
+            + wall_avoid_force.0 * 0.5
+            + tower_avoid_force.0 * 0.7;
+        let total_y = intent_y * 1.0
+            + separation_force.1 * 0.4
+            + wall_avoid_force.1 * 0.5
+            + tower_avoid_force.1 * 0.7;
+
+        // Normalize total direction
+        let total_magnitude = (total_x * total_x + total_y * total_y).sqrt();
+        let (desired_dir_x, desired_dir_y) = if total_magnitude > 0.001 {
+            (total_x / total_magnitude, total_y / total_magnitude)
         } else {
-            // No target - move autonomously toward enemy towers
-            // Based on legacy engine autonomous pathfinding (lines 6286-6453)
-            let move_target = get_autonomous_movement_target(state, entity);
+            (intent_x, intent_y) // Fallback to intent if forces cancel out
+        };
 
-            if let Some(target_pos) = move_target {
-                let move_speed = entity.movement_speed();
+        // Apply turn smoothing: lerp(previous_direction, desired_direction, 0.18)
+        let prev_dir = entity.smoothed_direction;
+        let smoothing_factor = 0.18;
 
-                // Apply waypoint pathfinding for ground units
-                let waypoint = if entity.can_cross_river() {
-                    target_pos
+        let smoothed_x = prev_dir.0 + (desired_dir_x - prev_dir.0) * smoothing_factor;
+        let smoothed_y = prev_dir.1 + (desired_dir_y - prev_dir.1) * smoothing_factor;
+
+        // Re-normalize smoothed direction
+        let smoothed_magnitude = (smoothed_x * smoothed_x + smoothed_y * smoothed_y).sqrt();
+        let (final_dir_x, final_dir_y) = if smoothed_magnitude > 0.001 {
+            (smoothed_x / smoothed_magnitude, smoothed_y / smoothed_magnitude)
+        } else {
+            (desired_dir_x, desired_dir_y)
+        };
+
+        // Calculate new position: new_position = old_position + (direction * speed * dt)
+        let move_speed = entity.movement_speed();
+        let new_x = entity.position.x + final_dir_x * move_speed * dt;
+        let new_y = entity.position.y + final_dir_y * move_speed * dt;
+        let new_position = Position::new(new_x, new_y);
+
+        // Check tile passability (out of bounds)
+        let tile_blocked = is_tile_blocked(state, entity, &new_position);
+
+        if !tile_blocked {
+            movement_updates.push((*id, (final_dir_x, final_dir_y), new_position));
+        } else {
+            // Blocked - keep current position but update smoothed direction
+            movement_updates.push((*id, (final_dir_x, final_dir_y), entity.position));
+        }
+    }
+
+    // Apply all movement updates
+    for (id, smoothed_direction, new_position) in movement_updates {
+        if let Some(entity) = state.entities.get_mut(&id) {
+            entity.smoothed_direction = smoothed_direction;
+            entity.position = new_position;
+        }
+    }
+
+    // Apply simple overlap separation (no mass-based physics)
+    apply_overlap_separation(state);
+}
+
+/// Calculates intent vector (direction toward target or autonomous goal).
+/// Returns normalized (unit vector) direction, or None if no goal.
+fn calculate_intent_vector(state: &GameState, entity: &crate::entities::Entity) -> Option<(f32, f32)> {
+    // Check if entity has a specific target
+    if let Some(target_id) = entity.target {
+        let target_entity_id = EntityId::from_u32(target_id);
+
+        // Get target position (if target still exists)
+        if let Some(target) = state.entities.get(&target_entity_id) {
+            let distance = entity.position.distance_to(&target.position);
+            let attack_range = entity.attack_range();
+
+            // If target is out of range, move toward it (possibly via bridge waypoint)
+            if distance > attack_range {
+                // Check if we need to path through a bridge
+                let move_target = if entity.can_cross_river() {
+                    // Air units / jumping units: go direct
+                    target.position
                 } else {
-                    get_movement_waypoint(&entity.position, &target_pos, &state.arena)
+                    // Ground units: check if target is across river
+                    get_movement_waypoint(&entity.position, &target.position, &state.arena)
                 };
 
-                let (dir_x, dir_y) = entity.position.direction_to(&waypoint);
-
-                velocity_updates.push((
-                    *id,
-                    Velocity::new(dir_x * move_speed, dir_y * move_speed),
-                ));
+                let (dir_x, dir_y) = entity.position.direction_to(&move_target);
+                return Some((dir_x, dir_y));
             } else {
-                // No enemies at all - stop
-                velocity_updates.push((*id, Velocity::zero()));
+                // Target in range - no movement intent
+                return None;
             }
         }
     }
 
-    // Apply velocity updates
-    for (id, velocity) in velocity_updates {
-        if let Some(entity) = state.entities.get_mut(&id) {
-            entity.velocity = velocity;
-        }
+    // No specific target - move autonomously toward enemy towers
+    let move_target = get_autonomous_movement_target(state, entity);
+
+    if let Some(target_pos) = move_target {
+        // Apply waypoint pathfinding for ground units
+        let waypoint = if entity.can_cross_river() {
+            target_pos
+        } else {
+            get_movement_waypoint(&entity.position, &target_pos, &state.arena)
+        };
+
+        let (dir_x, dir_y) = entity.position.direction_to(&waypoint);
+        Some((dir_x, dir_y))
+    } else {
+        // No enemies at all - no movement
+        None
     }
+}
 
-    // Second pass: Apply velocities to positions with collision detection
-    let mut position_updates: Vec<(EntityId, Position)> = Vec::new();
+/// Calculates separation force to avoid overlapping with nearby units.
+/// Returns a normalized force vector pushing away from nearby entities.
+fn calculate_separation_force(
+    state: &GameState,
+    entity: &crate::entities::Entity,
+    all_ids: &[EntityId],
+) -> (f32, f32) {
+    let mut total_force_x = 0.0;
+    let mut total_force_y = 0.0;
+    let mut neighbor_count = 0;
 
-    for (id, entity) in &state.entities {
-        // Skip if not moving
-        if entity.velocity.x == 0.0 && entity.velocity.y == 0.0 {
+    const SEPARATION_RADIUS: f32 = 2.0; // Only consider nearby units within 2 tiles
+
+    for other_id in all_ids {
+        let other = &state.entities[other_id];
+
+        // Don't separate from self (check by position) or from towers
+        let is_self = (entity.position.x - other.position.x).abs() < 0.001
+            && (entity.position.y - other.position.y).abs() < 0.001;
+
+        if is_self || !other.can_move() {
             continue;
         }
 
-        // Calculate new position
-        let new_x = entity.position.x + entity.velocity.x * dt;
-        let new_y = entity.position.y + entity.velocity.y * dt;
-        let new_position = Position::new(new_x, new_y);
+        let dx = entity.position.x - other.position.x;
+        let dy = entity.position.y - other.position.y;
+        let distance = (dx * dx + dy * dy).sqrt();
 
-        // Check tile passability (river blocking)
-        let tile_blocked = is_tile_blocked(state, entity, &new_position);
-
-        // Check for collisions with other entities
-        let would_collide = check_collision(state, *id, &new_position);
-
-        if !tile_blocked && !would_collide {
-            position_updates.push((*id, new_position));
+        // Only apply separation to nearby units
+        if distance < SEPARATION_RADIUS && distance > 0.001 {
+            // Force strength inversely proportional to distance
+            let force_magnitude = 1.0 / distance;
+            total_force_x += (dx / distance) * force_magnitude;
+            total_force_y += (dy / distance) * force_magnitude;
+            neighbor_count += 1;
         }
-        // If tile blocked or collision detected, don't move (stay in current position)
     }
 
-    // Apply position updates
-    for (id, position) in position_updates {
+    // Average and normalize the separation force
+    if neighbor_count > 0 {
+        total_force_x /= neighbor_count as f32;
+        total_force_y /= neighbor_count as f32;
+
+        let magnitude = (total_force_x * total_force_x + total_force_y * total_force_y).sqrt();
+        if magnitude > 0.001 {
+            return (total_force_x / magnitude, total_force_y / magnitude);
+        }
+    }
+
+    (0.0, 0.0)
+}
+
+/// Calculates tower avoidance force to make units "slide" around towers.
+/// Simple repulsion force - just pushes away from tower center.
+/// Combined with intent vector, this creates natural curved paths around obstacles.
+/// Weighted HIGH (0.7) to create Clash Royale's signature curved path.
+fn calculate_tower_avoidance_force(
+    state: &GameState,
+    entity: &crate::entities::Entity,
+) -> (f32, f32) {
+    use crate::entities::EntityKind;
+
+    let mut total_force_x = 0.0;
+    let mut total_force_y = 0.0;
+    let mut tower_count = 0;
+
+    // Tight avoidance radius - only repel when actually close to tower
+    const AVOIDANCE_RADIUS: f32 = 2.2;
+
+    for other in state.entities.values() {
+        // Only avoid towers
+        if !matches!(other.kind, EntityKind::Tower(_)) {
+            continue;
+        }
+
+        let dx = entity.position.x - other.position.x;
+        let dy = entity.position.y - other.position.y;
+        let distance = (dx * dx + dy * dy).sqrt();
+
+        // Only apply avoidance when close to tower
+        if distance < AVOIDANCE_RADIUS && distance > 0.001 {
+            // Simple repulsion - push directly away from tower center
+            // Strength increases as distance decreases (inverse relationship)
+            let strength = (AVOIDANCE_RADIUS - distance) / AVOIDANCE_RADIUS;
+
+            total_force_x += (dx / distance) * strength;
+            total_force_y += (dy / distance) * strength;
+            tower_count += 1;
+        }
+    }
+
+    // Average and normalize the tower avoidance force
+    if tower_count > 0 {
+        total_force_x /= tower_count as f32;
+        total_force_y /= tower_count as f32;
+
+        let magnitude = (total_force_x * total_force_x + total_force_y * total_force_y).sqrt();
+        if magnitude > 0.001 {
+            return (total_force_x / magnitude, total_force_y / magnitude);
+        }
+    }
+
+    (0.0, 0.0)
+}
+
+/// Calculates wall avoidance force to prevent units from walking into arena boundaries.
+/// Returns a normalized force vector pushing away from nearby walls.
+fn calculate_wall_avoidance_force(
+    state: &GameState,
+    entity: &crate::entities::Entity,
+) -> (f32, f32) {
+    let mut force_x = 0.0;
+    let mut force_y = 0.0;
+
+    const WALL_AVOID_DISTANCE: f32 = 1.5; // Start avoiding walls from 1.5 tiles away
+
+    // Check distance to each boundary
+    let left_dist = entity.position.x;
+    let right_dist = state.arena.width as f32 - entity.position.x;
+    let top_dist = entity.position.y;
+    let bottom_dist = state.arena.height as f32 - entity.position.y;
+
+    // Left wall
+    if left_dist < WALL_AVOID_DISTANCE {
+        force_x += (WALL_AVOID_DISTANCE - left_dist) / WALL_AVOID_DISTANCE;
+    }
+
+    // Right wall
+    if right_dist < WALL_AVOID_DISTANCE {
+        force_x -= (WALL_AVOID_DISTANCE - right_dist) / WALL_AVOID_DISTANCE;
+    }
+
+    // Top wall
+    if top_dist < WALL_AVOID_DISTANCE {
+        force_y += (WALL_AVOID_DISTANCE - top_dist) / WALL_AVOID_DISTANCE;
+    }
+
+    // Bottom wall
+    if bottom_dist < WALL_AVOID_DISTANCE {
+        force_y -= (WALL_AVOID_DISTANCE - bottom_dist) / WALL_AVOID_DISTANCE;
+    }
+
+    // Normalize
+    let magnitude = (force_x * force_x + force_y * force_y).sqrt();
+    if magnitude > 0.001 {
+        (force_x / magnitude, force_y / magnitude)
+    } else {
+        (0.0, 0.0)
+    }
+}
+
+/// Applies simple overlap separation to prevent units from stacking.
+/// No mass-based physics - just equal push-apart along separation vector.
+fn apply_overlap_separation(state: &mut GameState) {
+    let entity_ids: Vec<EntityId> = state.entities.keys().copied().collect();
+    let mut separation_updates: Vec<(EntityId, Position)> = Vec::new();
+
+    // Check all pairs for overlap
+    for i in 0..entity_ids.len() {
+        for j in (i + 1)..entity_ids.len() {
+            let id1 = entity_ids[i];
+            let id2 = entity_ids[j];
+
+            let (pos1, radius1, can_move1, pos2, radius2, can_move2) = {
+                let e1 = &state.entities[&id1];
+                let e2 = &state.entities[&id2];
+                (
+                    e1.position,
+                    e1.radius(),
+                    e1.can_move(),
+                    e2.position,
+                    e2.radius(),
+                    e2.can_move(),
+                )
+            };
+
+            // Skip if either has no collision radius
+            if radius1 == 0.0 || radius2 == 0.0 {
+                continue;
+            }
+
+            // Calculate overlap
+            let dx = pos2.x - pos1.x;
+            let dy = pos2.y - pos1.y;
+            let distance = (dx * dx + dy * dy).sqrt();
+            let min_distance = radius1 + radius2;
+            let overlap = min_distance - distance;
+
+            // Only apply hard separation if ACTUALLY overlapping (not just close)
+            // The steering separation force already handles "staying apart"
+            if overlap > 0.2 && distance > 0.001 {
+                // Gentle push-apart - much smaller than before
+                // This is just to fix actual penetration, not to keep them apart
+                let push_amount = overlap * 0.3; // Only push 30% of the overlap per frame (gradual)
+
+                // Normalize direction
+                let dir_x = dx / distance;
+                let dir_y = dy / distance;
+
+                // Push entity 1 away
+                if can_move1 {
+                    let new_pos1 = Position::new(
+                        pos1.x - dir_x * push_amount,
+                        pos1.y - dir_y * push_amount,
+                    );
+                    separation_updates.push((id1, new_pos1));
+                }
+
+                // Push entity 2 away
+                if can_move2 {
+                    let new_pos2 = Position::new(
+                        pos2.x + dir_x * push_amount,
+                        pos2.y + dir_y * push_amount,
+                    );
+                    separation_updates.push((id2, new_pos2));
+                }
+            }
+        }
+    }
+
+    // Apply separation updates
+    for (id, new_position) in separation_updates {
         if let Some(entity) = state.entities.get_mut(&id) {
-            entity.position = position;
+            entity.position = new_position;
         }
     }
+}
+
+/// Finds the initial target tower for a newly spawned unit based on its position.
+/// Returns the entity ID of the target tower.
+/// This locks in targeting at spawn to prevent units from switching lanes mid-path.
+pub fn find_initial_target(state: &GameState, entity_id: EntityId) -> Option<u32> {
+    let entity = state.entities.get(&entity_id)?;
+
+    use crate::entities::EntityKind;
+    use shared::PlayerId;
+
+    // Find enemy towers
+    let enemy_player = if entity.owner == PlayerId::Player1 {
+        PlayerId::Player2
+    } else {
+        PlayerId::Player1
+    };
+
+    let mut princess_left: Option<(EntityId, &crate::entities::Entity)> = None;
+    let mut princess_right: Option<(EntityId, &crate::entities::Entity)> = None;
+    let mut king_tower: Option<(EntityId, &crate::entities::Entity)> = None;
+
+    const ARENA_CENTER_X: f32 = 9.0;
+
+    for (id, other_entity) in &state.entities {
+        if other_entity.owner != enemy_player {
+            continue;
+        }
+
+        if let EntityKind::Tower(_) = other_entity.kind {
+            let x_dist_from_center = (other_entity.position.x - ARENA_CENTER_X).abs();
+
+            if x_dist_from_center < 3.0 {
+                king_tower = Some((*id, other_entity));
+            } else if other_entity.position.x < ARENA_CENTER_X {
+                princess_left = Some((*id, other_entity));
+            } else {
+                princess_right = Some((*id, other_entity));
+            }
+        }
+    }
+
+    // Select target based on unit's SPAWN position (not current position)
+    // This ensures targeting is locked in and doesn't change as unit moves
+    let target_tower = if entity.position.x < ARENA_CENTER_X {
+        princess_left.or(king_tower)
+    } else {
+        princess_right.or(king_tower)
+    };
+
+    target_tower.map(|(id, _)| id.as_u32())
 }
 
 /// Gets autonomous movement target when unit has no specific target.
@@ -230,23 +547,16 @@ fn get_movement_waypoint(from: &Position, to: &Position, _arena: &crate::arena::
     let on_top_bridge = (from.x - TOP_BRIDGE_X).abs() < 1.5;
     let on_bridge = on_bottom_bridge || on_top_bridge;
 
-    // If unit is IN the river zone (Y between 15-17) AND on a bridge tile, continue straight
+    // If unit is aligned with a bridge (X position matches), they should cross straight through
+    // Don't wait until they reach the entrance - start crossing as soon as they're aligned
+    if on_bridge {
+        // On bridge lane - go straight to target, crossing the river
+        return *to;
+    }
+
+    // If unit is IN the river but NOT on a bridge, they're stuck - route to nearest bridge
     let from_in_river = from.y >= RIVER_Y_START && from.y < RIVER_Y_END;
 
-    if from_in_river && on_bridge {
-        // Actually on a bridge, continue straight across
-        return *to;
-    }
-
-    // If unit is approaching a bridge entrance (near Y=15 or Y=17) AND heading toward bridge X, continue straight
-    let near_bridge_entrance = (from.y - RIVER_Y_START).abs() < 2.0 || (from.y - RIVER_Y_END).abs() < 2.0;
-
-    if near_bridge_entrance && on_bridge {
-        // Near bridge entrance and aligned with bridge - go straight to target
-        return *to;
-    }
-
-    // If in river but NOT on bridge, they're stuck - route to nearest bridge
     if from_in_river {
         let dist_to_bottom = (from.x - BOTTOM_BRIDGE_X).abs();
         let dist_to_top = (from.x - TOP_BRIDGE_X).abs();
@@ -267,16 +577,16 @@ fn get_movement_waypoint(from: &Position, to: &Position, _arena: &crate::arena::
         15.0
     };
 
-    // Select bridge based on which one is closer to the unit's X position
-    // This keeps units in their lane when crossing
-    let dist_to_bottom_bridge = (from.x - BOTTOM_BRIDGE_X).abs();
-    let dist_to_top_bridge = (from.x - TOP_BRIDGE_X).abs();
+    // Select bridge based on which one is closer to the TARGET's X position
+    // This ensures units route through the correct bridge to reach their destination
+    let dist_to_bottom_bridge = (to.x - BOTTOM_BRIDGE_X).abs();
+    let dist_to_top_bridge = (to.x - TOP_BRIDGE_X).abs();
 
     let waypoint_x = if dist_to_bottom_bridge < dist_to_top_bridge {
-        // Closer to bottom bridge (x=3.5)
+        // Target closer to bottom bridge (X=3.0) - use left lane
         BOTTOM_BRIDGE_X
     } else {
-        // Closer to top bridge (x=14.0)
+        // Target closer to top bridge (X=14.0) - use right lane
         TOP_BRIDGE_X
     };
 
@@ -291,37 +601,6 @@ fn is_tile_blocked(state: &GameState, _entity: &crate::entities::Entity, new_pos
     // to guide units to bridges. Units that somehow get off-path can walk through rivers.
     if !state.arena.is_in_bounds(new_position) {
         return true;
-    }
-
-    false
-}
-
-/// Checks if moving an entity to a new position would cause a collision.
-fn check_collision(state: &GameState, moving_entity_id: EntityId, new_position: &Position) -> bool {
-    let moving_entity = &state.entities[&moving_entity_id];
-    let moving_radius = moving_entity.radius();
-
-    // Check against all other entities
-    for (other_id, other_entity) in &state.entities {
-        // Skip self
-        if *other_id == moving_entity_id {
-            continue;
-        }
-
-        // Skip entities with no collision radius
-        let other_radius = other_entity.radius();
-        if other_radius == 0.0 {
-            continue;
-        }
-
-        // Calculate distance between centers
-        let distance = new_position.distance_to(&other_entity.position);
-        let min_distance = moving_radius + other_radius;
-
-        // Collision if circles overlap
-        if distance < min_distance {
-            return true;
-        }
     }
 
     false
