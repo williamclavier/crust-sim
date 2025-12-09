@@ -1,0 +1,91 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "crust-gym"
+version = "0.1.0"
+description = "Gymnasium RL environment for Clash Royale simulator"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "Crust Sim Contributors" }
+]
+keywords = ["reinforcement-learning", "gymnasium", "clash-royale", "game-ai", "rl"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "gymnasium>=0.29.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+# Training dependencies
+train = [
+    "stable-baselines3>=2.0.0",
+    "tensorboard>=2.15.0",
+]
+
+# Development dependencies
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "mypy>=1.5.0",
+    "ruff>=0.1.0",
+]
+
+# Advanced RL frameworks
+advanced = [
+    "ray[rllib]>=2.8.0",
+    "torch>=2.0.0",
+]
+
+# All dependencies
+all = [
+    "crust-gym[train,dev,advanced]",
+]
+
+[project.urls]
+Homepage = "https://github.com/your-repo/crust-sim"
+Documentation = "https://github.com/your-repo/crust-sim/tree/main/docs"
+Repository = "https://github.com/your-repo/crust-sim"
+Issues = "https://github.com/your-repo/crust-sim/issues"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+python-source = "python"
+module-name = "crust_gym._native"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py38", "py39", "py310", "py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true

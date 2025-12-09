@@ -3,6 +3,7 @@ members = [
     "engine",
     "shared",
     "viewer",
+    "py-gym",
 ]
 resolver = "2"
 
